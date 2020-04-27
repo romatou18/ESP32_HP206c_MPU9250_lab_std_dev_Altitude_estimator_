@@ -13,6 +13,13 @@
 #include <MPU9250_Passthru.h>
 #include <altitude.h>
 
+#define DEBUG true
+#define CALIBRATE false
+#define STD_DEV false
+constexpr float GROUND_ALTI = -9.11;
+constexpr float GROUND_PRESSURE = 1013.12;
+
+
 
 TaskHandle_t *Task1;
 
@@ -20,14 +27,13 @@ float pastTime = millis();
 float currentTime = millis();
 
 // Altitude estimator
-constexpr long alti_offset = 23.0;
 
 static AltitudeEstimator altitude = AltitudeEstimator(
-  0.005, // sigma Accel
-        0.001, // sigma Gyro
-        0.10,   // sigma Baro
-        0.5, // ca
-        1.0);// accelThreshold
+  0.00165, // sigma Accel
+  0.001, // sigma Gyro
+  0.001,   // sigma Baro
+  0.5, // ca
+  0.2);// accelThreshold
 
 unsigned char ret = 0;
 
@@ -117,56 +123,51 @@ void getPressure(baro_reading_t& read)
   char display[40];
   if(OK_HP20X_DEV == ret)
   { 
-	  Serial.println(F("------------------\n"));
-	  long Temper = HP20x.ReadTemperature();
-	  Serial.println(F("Temper:"));
 
+	  long Temper = HP20x.ReadTemperature();
 	  float t = Temper/100.0;
     read.t = t;
-
-	  Serial.print(t);	  
-	  Serial.println(F("C.\n"));
-	  Serial.println(F("Filter:"));
-
     auto tf = t_filter.Filter(t);
     read.tf = tf;
 
-	  Serial.print(tf);
-	  Serial.println(F("C.\n"));
  
     long Pressure = HP20x.ReadPressure();
-	  Serial.println(F("Pressure:"));
-	  // *p = Pressure/100.0;
-    pi = Pressure/100.0;
-	  // Serial.print(*p);
-
-    Serial.print(pi);
+	  pi = Pressure/100.0;
     read.p = pi;
-
-	  Serial.println(F("hPa.\n"));
-	  Serial.println(F("Filter:"));
-	  // Serial.print(p_filter.Filter(*p));
-
     auto pf = p_filter.Filter(pi);
     read.pf = pf;
-
-    Serial.print(pf);
-	  Serial.println(F("hPa\n"));
 	  
 	  long Altitude = HP20x.ReadAltitude();
-	  Serial.println(F("Altitude:"));
-	  float a = Altitude/100.0;
+    float a = Altitude/100.0;
     read.a = a;
+    auto af = a_filter.Filter(a);
+    read.af = af;
+
+#if DEBUG
+	  Serial.println(F("------------------\n"));
+    Serial.println(F("Temper:"));
+	  Serial.print(t);	  
+	  Serial.println(F("C.\n"));
+	  Serial.println(F("Filter:"));
+    Serial.print(tf);
+	  Serial.println(F("C.\n"));
+
+    Serial.println(F("Pressure:"));
+    Serial.print(pi);
+	  Serial.println(F("hPa.\n"));
+	  Serial.println(F("Filter:"));
+    Serial.print(pf);
+	  Serial.println(F("hPa\n"));
+
+	  Serial.println(F("Altitude:"));
 	  Serial.print(a);
 	  Serial.println(F("m.\n"));
 	  Serial.println(F("Filter:"));
-
-    auto af = a_filter.Filter(t);
 	  Serial.print(af);
-    read.af = af;
-
 	  Serial.println(F("m.\n"));
 	  Serial.println(F("------------------\n"));
+#endif
+
     delay(50);
     }
 }
@@ -208,27 +209,39 @@ void getGyrometerAndAccelerometer(float gyro[3], float accel[3])
 
         gotNewData = false;
 
-        // if (imu.checkNewAccelGyroData()) {
+        if (imu.checkNewAccelGyroData()) {
           
           float ax, ay, az, gx, gy, gz;
           imu.readAccelerometer(ay, ax, az);
           imu.readGyrometer(gy, gx, gz);
           gx = -gx;
           // Copy gyro values back out in rad/sec
-          gyro[0] = gx * M_PI / 180.0f;
-          gyro[1] = gy * M_PI / 180.0f;
-          gyro[2] = gz * M_PI / 180.0f;
+          gyro[0] = gx * DEG_TO_RAD;
+          gyro[1] = gy * DEG_TO_RAD;
+          gyro[2] = gz * DEG_TO_RAD;
           // and acceleration values
           accel[0] = ax;
           accel[1] = ay;
-          accel[2] = az;
+          accel[2] = az - 1.0;
+#if DEBUG
+          Serial.print(F("readGyro x y z "));
+          Serial.print(gyro[0], 2);
+          Serial.print("\t");
+          Serial.print(gyro[1], 2);
+          Serial.print("\t");
+          Serial.println(gyro[2], 2);
 
-          // Serial.print(F("readGyro[z]"));
-          // Serial.println(gyro[2], 2);
-          // Serial.print(F("readAccel[z]"));
-          // Serial.println(accel[2], 2);
+
+          Serial.print(F("readAccel x y z "));
+          Serial.print(accel[0], 2);
+          Serial.print("\t");
+          Serial.print(accel[1], 2);
+          Serial.print("\t");
+          Serial.println(accel[2], 2);
+#endif
+
           
-        // } // if (imu.checkNewAccelGyroData())
+        } // if (imu.checkNewAccelGyroData())
 
     } // if gotNewData
     // delay(5);
@@ -381,7 +394,7 @@ void init_sensors()
 }
 
 
-void main_task(void*)
+void standard_dev(void*)
 {
   // IMPORTANT : put all the Bus related, device related init in the task itself instead of the setup()
   // setup() is run by CPU 1, so if ever things need to be run by CPU0 then all that is not init in the task itself won't work!
@@ -389,12 +402,12 @@ void main_task(void*)
 
   while(1)
   {
-    // Serial.println("Computing Barometer standard deviation");
-    //     float baroSigma = 0;
-    //     baroSigma = getBarometerSigma(iterations);
-    //     Serial.print("Barometer standard deviation: ");
-    //     Serial.println(baroSigma, 15);
-    //   delay(5000);
+    Serial.println("Computing Barometer standard deviation");
+        float baroSigma = 0;
+        baroSigma = getBarometerSigma(200);
+        Serial.print("Barometer standard deviation: ");
+        Serial.println(baroSigma, 15);
+      delay(5000);
 
     Serial.println("Computing Accelerometer and Gyrometer standard deviations");
     double accelSigma;
@@ -432,6 +445,8 @@ void setup()
    
   init_sensors();
 
+#if STD_DEV == false
+#if CALIBRATE
   // calibrate barometer
   uint32_t count = 0;
   while (count < endCalibration) 
@@ -441,23 +456,32 @@ void setup()
       calibrate(r.p);
       count++;
   }
+  #else
+    groundAltitude = GROUND_ALTI;
+    groundPressure = GROUND_PRESSURE;
+  #endif
 
+#if DEBUG
   Serial.print("Ground pressure = ");
   Serial.println(groundPressure/8);
 
   Serial.print("Ground Altitude = ");
   Serial.println(groundAltitude);
-  delay(4000);
+#endif
+  delay(5000);
+  // Serial.println("alti estimated veloc acc");
+  #endif
 
-  
-  // xTaskCreatePinnedToCore(
-  //                     main_task,   /* Task function. */
-  //                     "Task1",     /* name of task. */
-  //                     50000,       /* Stack size of task */
-  //                     NULL,        /* parameter of the task */
-  //                     2,           /* priority of the task */
-  //                     Task1,      /* Task handle to keep track of created task */
-  //                     1);          /* pin task to core 0 */   
+  #if STD_DEV
+  xTaskCreatePinnedToCore(
+                      standard_dev,   /* Task function. */
+                      "Task1",     /* name of task. */
+                      50000,       /* Stack size of task */
+                      NULL,        /* parameter of the task */
+                      2,           /* priority of the task */
+                      Task1,      /* Task handle to keep track of created task */
+                      1);          /* pin task to core 0 */
+  #endif   
 }
  
 
@@ -465,7 +489,9 @@ void setup()
 
 void loop()
 {
- currentTime = millis();
+
+#if STD_DEV == false
+  currentTime = millis();
   if ((currentTime - pastTime) > 500)
   {
     // // Check for new data in the FIFO
@@ -484,37 +510,37 @@ void loop()
     // }
     // get all necessary data
 
+    auto timestamp = micros();
+
     baro_reading_t r; 
     getPressure(r);
     // float Altitude = HP20x.ReadAltitude();
-    Serial.print("Ground Altitude: ");
-    float alti = r.a - groundAltitude;
-    Serial.println(alti);
 
-    uint32_t timestamp = micros();
+    float alti = r.a - groundAltitude;
+
+#if DEBUG
+    Serial.print("Ground Altitude: ");
+    Serial.println(alti);
+#endif
 
     float accelData[3];
     float gyroData[3];
 
     imuRead(gyroData, accelData);
 
-    Serial.print(F("readGyro[z]"));
-    Serial.println(gyroData[2], 2);
-    Serial.print(F("readAccel[z]"));
-    Serial.println(accelData[2], 2);
 
-    altitude.estimate(accelData, gyroData, alti , timestamp);
+    float accelData2[3] = {0.0, 0.0, -1.0};
+
+    altitude.estimate(accelData2, accelData2, alti , timestamp);
     Serial.print(alti);
-    Serial.print(",est Alti=");
+    Serial.print(" ");
     Serial.print(altitude.getAltitude());
-    Serial.print(",velocity=");
+    Serial.print(" ");
     Serial.print(altitude.getVerticalVelocity());
-    Serial.print(",vert acc=");
+    Serial.print(" ");
     Serial.println(altitude.getVerticalAcceleration());
-
-
-
 
     pastTime = currentTime;
   }
+  #endif
 }
