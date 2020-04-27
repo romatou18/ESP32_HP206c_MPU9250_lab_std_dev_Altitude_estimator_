@@ -11,6 +11,10 @@
 #include "Wire.h" 
 #include <KalmanFilter.h>
 #include <MPU9250_Passthru.h>
+
+
+TaskHandle_t *Task1;
+
 unsigned char ret = 0;
 
 /* Instance */
@@ -22,10 +26,6 @@ HP20x_dev HP20x(0,21,22, 400000U);
 
 // Number of readings from which standard deviations will be computed
 constexpr int iterations = 1000;
-static float history[iterations];
-static float meanPressure;
-static int idx;
-
 long alti_offset = 0.0;
 
 
@@ -33,7 +33,7 @@ long alti_offset = 0.0;
 // Acelerometer anf Gyrometer helper methods and variables
 
 // Sensor scale settings
-const MPUIMU::Ascale_t ASCALE = MPUIMU::AFS_8G;
+const MPUIMU::Ascale_t ASCALE = MPUIMU::AFS_2G;
 const MPUIMU::Gscale_t GSCALE = MPUIMU::GFS_2000DPS;
 const MPU9250::Mscale_t MSCALE = MPU9250::MFS_16BITS;
 const MPU9250::Mmode_t MMODE = MPU9250::M_100Hz;
@@ -41,7 +41,7 @@ const MPU9250::Mmode_t MMODE = MPU9250::M_100Hz;
 // SAMPLE_RATE_DIVISOR = 0 means 1 kHz sample rate for both accel and gyro, 4 means 200 Hz, etc.
 const uint8_t SAMPLE_RATE_DIVISOR = 0;
 // MPU9250 add-on board has interrupt on Butterfly pin 8
-const uint8_t INTERRUPT_PIN = 8;
+const uint8_t INTERRUPT_PIN = 4;
 static const uint8_t LED_PIN = 13; // red led
 
 
@@ -159,8 +159,93 @@ void getGyrometerAndAccelerometer(float gyro[3], float accel[3])
         // } // if (imu.checkNewAccelGyroData())
 
     } // if gotNewData
+    delay(5);
+}
+
+// Function to compute accelerometer and gyrometer standard deviations
+void getAccelAndGyroSigmas(double* sigmaAccel, double* sigmaGyro, uint16_t numberOfIterations)
+{
+    // here we will store each accel axis' readings
+    long double accelHistoryX[numberOfIterations];
+    long double accelHistoryY[numberOfIterations];
+    long double accelHistoryZ[numberOfIterations];
+    // here we will store each gyro axis' readings
+    long double gyroHistoryX[numberOfIterations];
+    long double gyroHistoryY[numberOfIterations];
+    long double gyroHistoryZ[numberOfIterations];
+    long double meanAccelX = 0;
+    long double meanAccelY = 0;
+    long double meanAccelZ = 0;
+    long double meanGyroX = 0;
+    long double meanGyroY = 0;
+    long double meanGyroZ = 0;
+
+    for (uint16_t index = 0; index < numberOfIterations; index++) {
+        float readGyro[3];
+        float readAccel[3];
+        getGyrometerAndAccelerometer(readGyro, readAccel);
+        // store gyro readings
+        gyroHistoryX[index] = readGyro[0];
+        gyroHistoryY[index] = readGyro[1];
+        gyroHistoryZ[index] = readGyro[2];
+        // store accel readings
+        accelHistoryX[index] = readAccel[0];
+        accelHistoryY[index] = readAccel[1];
+        accelHistoryZ[index] = readAccel[2];
+        // increase mean sums
+        meanGyroX += readGyro[0];
+        meanGyroY += readGyro[1];
+        meanGyroZ += readGyro[2];
+
+        meanAccelX += readAccel[0];
+        meanAccelY += readAccel[1];
+        meanAccelZ += readAccel[2];
+    }
+    // Compute means
+    meanGyroX /= numberOfIterations;
+    meanGyroY /= numberOfIterations;
+    meanGyroZ /= numberOfIterations;
+
+    meanAccelX /= numberOfIterations;
+    meanAccelY /= numberOfIterations;
+    meanAccelZ /= numberOfIterations;
+
+    // Compute standard deviations
+    long double numeratorGyroX = 0;
+    long double numeratorGyroY = 0;
+    long double numeratorGyroZ = 0;
+
+    long double numeratorAccelX = 0;
+    long double numeratorAccelY = 0;
+    long double numeratorAccelZ = 0;
+
+    for (uint16_t index = 0; index < numberOfIterations; index++) {
+      numeratorGyroX += pow(gyroHistoryX[index] - meanGyroX, 2);
+      numeratorGyroY += pow(gyroHistoryY[index] - meanGyroY, 2);
+      numeratorGyroZ += pow(gyroHistoryZ[index] - meanGyroZ, 2);
+
+      numeratorAccelX += pow(accelHistoryX[index] - meanAccelX, 2);
+      numeratorAccelY += pow(accelHistoryY[index] - meanAccelY, 2);
+      numeratorAccelZ += pow(accelHistoryZ[index] - meanAccelZ, 2);
+    }
+    // Now, to compute on single standard deviation value for each
+    // sensor, Gyro and Accel, we will take the maximum of the standard
+    // deviations of each axis.
+    long double gyroSigmaX = sqrt(numeratorGyroX / (numberOfIterations - 1));
+    long double gyroSigmaY = sqrt(numeratorGyroY / (numberOfIterations - 1));
+    long double gyroSigmaZ = sqrt(numeratorGyroZ / (numberOfIterations - 1));
+
+    long double accelSigmaX = sqrt(numeratorAccelX / (numberOfIterations - 1));
+    long double accelSigmaY = sqrt(numeratorAccelY / (numberOfIterations - 1));
+    long double accelSigmaZ = sqrt(numeratorAccelZ / (numberOfIterations - 1));
+
+    long double tmp  = max(gyroSigmaX, gyroSigmaY);
+    *sigmaGyro =  max(tmp, gyroSigmaZ);
+    tmp  = max(accelSigmaX, accelSigmaY);
+    *sigmaAccel = max(tmp, accelSigmaZ);
 
 }
+
 
 static void error(const char * errmsg) 
 {
@@ -168,10 +253,34 @@ static void error(const char * errmsg)
     while (true) ;
 }
 
+
+void main_task(void*)
+{
+  while(1)
+  {
+    // Serial.println("Computing Barometer standard deviation");
+    //     float baroSigma = 0;
+    //     baroSigma = getBarometerSigma(iterations);
+    //     Serial.print("Barometer standard deviation: ");
+    //     Serial.println(baroSigma, 15);
+    //   delay(5000);
+
+    Serial.println("Computing Accelerometer and Gyrometer standard deviations");
+    double accelSigma;
+    double gyroSigma;
+    getAccelAndGyroSigmas(&accelSigma, &gyroSigma, iterations);
+    Serial.print("Accelerometer standard deviation: ");
+    Serial.println(accelSigma, 15);
+    Serial.print("Gyrometer standard deviation: ");
+    Serial.println(gyroSigma, 15);
+
+    delay(5000);
+    
+  }
+}
+
 void setup()
 {  
-  idx = 0;
-  meanPressure = 0.0;
   Serial.begin(38400);        // start serial for output
   
   Serial.println("****HP20x_dev demo by seeed studio****\n");
@@ -231,50 +340,20 @@ void setup()
 
     digitalWrite(LED_PIN, LOW); // turn off led when using flash memory
   
+  xTaskCreatePinnedToCore(
+                      main_task,   /* Task function. */
+                      "Task1",     /* name of task. */
+                      100000,       /* Stack size of task */
+                      NULL,        /* parameter of the task */
+                      2,           /* priority of the task */
+                      Task1,      /* Task handle to keep track of created task */
+                      1);          /* pin task to core 0 */   
 }
  
 
+
+
 void loop()
 {
-  // if(idx < iterations)
-  // {
-  //   float p = getPressure();
-  //   Serial.print(F("instant pressure = "));
-  //   Serial.println(p, 2);
-  //   history[idx] = p;
-  //   // we will use pressureSum to compute the mean pressure
-  //   meanPressure += history[idx];
-  //   ++idx;
-  // } else {
-  //   meanPressure /= iterations;
-  //   // Compute standard deviation
-  //   Serial.print(F("meanPressure = "));
-  //   Serial.println(meanPressure, 2);
-  //   float numerator = 0;
-  //   for(uint16_t i = 0; i < iterations; i++)
-  //   {
-  //     numerator += pow(history[i] - meanPressure, 2);
-  //   }
-
-  //   double standard_deviation = sqrt(numerator / (iterations - 1));
-  //   Serial.print(F("baro std dev = "));
-  //   Serial.println(standard_deviation, 2);
-  //   Serial.print(F("meanPressure = "));
-  //   Serial.print(meanPressure, 2);
-  //   Serial.println(F("meanPressure"));
-  //   delay(5000);
-  //   meanPressure = 0;
-  //   idx = 0;
-  // }
-
-  // float readGyro[3];
-  // float readAccel[3];
-  // getGyrometerAndAccelerometer(readGyro, readAccel);
  
-  Serial.println("Computing Barometer standard deviation");
-    float baroSigma = 0;
-    baroSigma = getBarometerSigma(iterations);
-    Serial.print("Barometer standard deviation: ");
-    Serial.println(baroSigma, 15);
-  
 }
