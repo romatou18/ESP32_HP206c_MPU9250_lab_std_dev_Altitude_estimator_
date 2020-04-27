@@ -13,11 +13,12 @@
 #include <MPU9250_Passthru.h>
 #include <altitude.h>
 
-#define DEBUG true
+#define DEBUG false
 #define CALIBRATE false
 #define STD_DEV false
-constexpr float GROUND_ALTI = -9.11;
+constexpr float GROUND_ALTI = -15;
 constexpr float GROUND_PRESSURE = 1013.12;
+constexpr uint16_t PERIOD_MS = 20;
 
 
 
@@ -27,13 +28,12 @@ float pastTime = millis();
 float currentTime = millis();
 
 // Altitude estimator
-
 static AltitudeEstimator altitude = AltitudeEstimator(
-  0.00165, // sigma Accel
-  0.001, // sigma Gyro
-  0.001,   // sigma Baro
+  0.000355, // sigma Accel 0.000354660293112
+  0.000206, // sigma Gyro 0.000206332998559
+  0.105356,   // sigma Baro 0.105355456471443
   0.5, // ca
-  0.2);// accelThreshold
+  5.0);// accelThreshold
 
 unsigned char ret = 0;
 
@@ -61,7 +61,7 @@ constexpr int iterations = 1000;
 // Acelerometer anf Gyrometer helper methods and variables
 
 // Sensor scale settings
-const MPUIMU::Ascale_t ASCALE = MPUIMU::AFS_8G;
+const MPUIMU::Ascale_t ASCALE = MPUIMU::AFS_4G;
 const MPUIMU::Gscale_t GSCALE = MPUIMU::GFS_2000DPS;
 const MPU9250::Mscale_t MSCALE = MPU9250::MFS_16BITS;
 const MPU9250::Mmode_t MMODE = MPU9250::M_100Hz;
@@ -168,7 +168,7 @@ void getPressure(baro_reading_t& read)
 	  Serial.println(F("------------------\n"));
 #endif
 
-    delay(50);
+    // delay(50);
     }
 }
 
@@ -222,7 +222,7 @@ void getGyrometerAndAccelerometer(float gyro[3], float accel[3])
           // and acceleration values
           accel[0] = ax;
           accel[1] = ay;
-          accel[2] = az - 1.0;
+          accel[2] = az;
 #if DEBUG
           Serial.print(F("readGyro x y z "));
           Serial.print(gyro[0], 2);
@@ -404,7 +404,7 @@ void standard_dev(void*)
   {
     Serial.println("Computing Barometer standard deviation");
         float baroSigma = 0;
-        baroSigma = getBarometerSigma(200);
+        baroSigma = getBarometerSigma(300);
         Serial.print("Barometer standard deviation: ");
         Serial.println(baroSigma, 15);
       delay(5000);
@@ -469,7 +469,7 @@ void setup()
   Serial.println(groundAltitude);
 #endif
   delay(5000);
-  // Serial.println("alti estimated veloc acc");
+  Serial.println("alti estimated veloc acc");
   #endif
 
   #if STD_DEV
@@ -492,7 +492,7 @@ void loop()
 
 #if STD_DEV == false
   currentTime = millis();
-  if ((currentTime - pastTime) > 500)
+  if ((currentTime - pastTime) > PERIOD_MS)
   {
     // // Check for new data in the FIFO
     // if ( imu.fifoAvailable() )
@@ -516,7 +516,7 @@ void loop()
     getPressure(r);
     // float Altitude = HP20x.ReadAltitude();
 
-    float alti = r.a - groundAltitude;
+    float alti = r.af - groundAltitude;
 
 #if DEBUG
     Serial.print("Ground Altitude: ");
@@ -531,7 +531,7 @@ void loop()
 
     float accelData2[3] = {0.0, 0.0, -1.0};
 
-    altitude.estimate(accelData2, accelData2, alti , timestamp);
+    altitude.estimate(accelData, gyroData, alti , timestamp);
     Serial.print(alti);
     Serial.print(" ");
     Serial.print(altitude.getAltitude());
