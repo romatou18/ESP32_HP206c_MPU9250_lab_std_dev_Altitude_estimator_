@@ -11,11 +11,14 @@
 #include "Wire.h" 
 #include <KalmanFilter.h>
 #include <MPU9250_Passthru.h>
+// #include <MPU9250.h>
 #include <altitude.h>
 
 #define DEBUG false
 #define CALIBRATE false
 #define STD_DEV false
+#define USE_EWMA true
+
 constexpr float GROUND_ALTI = -15;
 constexpr float GROUND_PRESSURE = 1013.12;
 constexpr uint16_t PERIOD_MS = 20;
@@ -32,8 +35,8 @@ static AltitudeEstimator altitude = AltitudeEstimator(
   0.000355, // sigma Accel 0.000354660293112
   0.000206, // sigma Gyro 0.000206332998559
   0.105356,   // sigma Baro 0.105355456471443
-  0.5, // ca
-  5.0);// accelThreshold
+  0.1, // ca
+  4.0);// accelThreshold
 
 unsigned char ret = 0;
 
@@ -52,6 +55,9 @@ typedef struct {
 } baro_reading_t;
 
 HP20x_dev HP20x(0,21,22, 400000U);
+#include <Ewma.h>
+Ewma baroFilter1(0.1);   // Less smoothing - faster to detect changes, but more prone to noise
+Ewma baroFilter2(0.01);  // More smoothing - less prone to noise, but slower to detect changes
 
 // Number of readings from which standard deviations will be computed
 constexpr int iterations = 1000;
@@ -75,6 +81,18 @@ static const uint8_t LED_PIN = 13; // red led
 
 // Use the MPU9250 in pass-through mode
 static MPU9250_Passthru imu(ASCALE, GSCALE, MSCALE, MMODE, SAMPLE_RATE_DIVISOR);
+
+
+// Use the MPU9250 in pass-through mode
+// Store imu data
+static int16_t imuData[7] = {0,0,0,0,0,0,0};
+// For scaling to normal units (accelerometer G's, gyrometer rad/sec, magnetometer mGauss)
+static float aRes;
+static float gRes;
+static float mRes;
+// We compute these at startup
+static float gyroBias[3]  = {0,0,0};
+static float accelBias[3] = {0,0,0};
 // flag for when new data is received
 bool gotNewData = false;
 
@@ -140,8 +158,21 @@ void getPressure(baro_reading_t& read)
 	  long Altitude = HP20x.ReadAltitude();
     float a = Altitude/100.0;
     read.a = a;
+
+#if USE_EWMA
+    auto af = baroFilter1.filter(a);
+    auto af2 = baroFilter2.filter(a);
+    read.af = af2;
+#if DEBUG
+    Serial.printf("Raw Alti=%d, Filter1=%.3f, Filter2=%.3f", raw, af1, af2);
+#endif
+
+#else
     auto af = a_filter.Filter(a);
     read.af = af;
+#endif
+  
+
 
 #if DEBUG
 	  Serial.println(F("------------------\n"));
@@ -391,6 +422,9 @@ void init_sensors()
 
 
     digitalWrite(LED_PIN, LOW); // turn off led when using flash memory
+
+    // Calibrate gyro and accelerometers, load biases in bias registers
+    imu.calibrate();
 }
 
 
@@ -456,10 +490,10 @@ void setup()
       calibrate(r.p);
       count++;
   }
-  #else
+#else
     groundAltitude = GROUND_ALTI;
     groundPressure = GROUND_PRESSURE;
-  #endif
+#endif
 
 #if DEBUG
   Serial.print("Ground pressure = ");
@@ -470,7 +504,7 @@ void setup()
 #endif
   delay(5000);
   Serial.println("alti estimated veloc acc");
-  #endif
+#endif
 
   #if STD_DEV
   xTaskCreatePinnedToCore(
